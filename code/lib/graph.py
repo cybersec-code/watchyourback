@@ -462,7 +462,7 @@ def components(G):
     logging.info(f"Components in the graph: {len(comp)}")
     seeds = {x for x in G.nodes if 'seed' in G.nodes[x] and G.nodes[x]['seed']}
     tagged = {x for x in G.nodes \
-            if 'fulltag' in G.nodes[x] and G.nodes[x]['fulltags']}
+            if 'fulltag' in G.nodes[x] and G.nodes[x]['fulltag']}
     for n, c in enumerate(sorted(comp, key=len, reverse=True)):
         s = seeds & c
         logging.info(f"Found {len(s)} seeds in component {n}")
