@@ -742,6 +742,9 @@ def addr_to_string(addr):
     # Return input|output script for non standards
     elif type(addr) == blocksci.NonStandardAddress:
         return f"{addr.in_script}|{addr.out_script}"
+    # WitnessUnknownAddress has no attribute address_string
+    elif type(addr) == blocksci.WitnessUnknownAddress:
+        return f"{addr.address_num}:{addr.witness_script}"
     # Return data for OP_RETURN scripts
     elif type(addr) == blocksci.OpReturn:
         return addr.data.hex()
