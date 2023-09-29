@@ -8,14 +8,108 @@ import time
 import logging
 import blocksci
 import argparse
+import pandas as pd
 from collections import defaultdict
 from datetime import datetime
 try:
-    from Vector import Vector
+    from lib import tags
+    from lib.Vector import Vector
 except ModuleNotFoundError:
-    from .Vector import Vector
+    import tags
+    from Vector import Vector
+
 
 bmex_addrs = set()
+cm = None
+chain = None
+
+def build_art_clusters(chain, mapfile, height=0, ignore_wd=False):
+    '''
+    Use a mapfile to produce artificial clusters in dict format. Each cluster
+    will have four fields: saddrs (bitcoin address in string format), addrs
+    (bitcoin address in blocksci format), output_txes and input_txes (all
+    output/input txes associated to the set of bitcoin addresses that belong to
+    this cid).
+    The mapfile should be in csv format, it should contain the headers and two
+    columns: cid and addr (e.g. 'cid,addr')
+    '''
+    clusters = defaultdict(list)
+    d = pd.read_csv(mapfile)
+    for i, r in d.iterrows():
+        clusters[r.cid].append(r.addr)
+#        if r.cid not in clusters:
+#            clusters[r.cid] = {
+#                        'saddrs': set(),
+#                        'addrs': set(),
+#                        'output_txes': set(),
+#                        'input_txes': set(),
+#                    }
+#        a = addr_from_string(r.addr, chain)
+#        if not a:
+#            continue
+#        clusters[r.cid]['saddrs'].add(r.addr)
+#        clusters[r.cid]['addrs'].add(a)
+#        clusters[r.cid]['output_txes'].update(a.output_txes.to_list())
+#        clusters[r.cid]['input_txes'].update(a.input_txes.to_list())
+#    return clusters
+    return build_art_clusters_from_dict(chain, clusters, height, ignore_wd)
+
+def build_art_clusters_from_dict(chain, dictmap, height=0, ignore_wd=False):
+    '''
+    Use a dict to produce artificial clusters in dict format. Each cluster
+    will have four fields: saddrs (bitcoin address in string format), addrs
+    (bitcoin address in blocksci format), output_txes and input_txes (all
+    output/input txes associated to the set of bitcoin addresses that belong to
+    this cid). If a height is given, only txes up to this height will be
+    returned.
+    The mapfile should be in csv format, it should contain the headers and two
+    columns: cid and addr (e.g. 'cid,addr')
+    '''
+    clusters = {}
+    for cid, addrs in dictmap.items():
+        if cid not in clusters:
+            clusters[cid] = {
+                        'saddrs': set(),
+                        'addrs': set(),
+                        'output_txes': set(),
+                        'input_txes': set(),
+                    }
+        for addr in addrs:
+            if isinstance(addr, str):
+                saddr = addr
+                a = addr_from_string(addr, chain, height)
+            else:
+                saddr = addr_to_string(addr)
+                a = addr
+            if not a:
+                continue
+            if height:
+                o_txes = a.output_txes.where(lambda t: t.block.height <= height).to_list()
+                if ignore_wd:
+                    i_txes = []
+                else:
+                    i_txes = a.input_txes.where(lambda t: t.block.height <= height).to_list()
+            else:
+                o_txes = a.output_txes.to_list()
+                if ignore_wd:
+                    i_txes = []
+                else:
+                    i_txes = a.input_txes.to_list()
+            clusters[cid]['saddrs'].add(saddr)
+            clusters[cid]['addrs'].add(a)
+            clusters[cid]['output_txes'].update(o_txes)
+            clusters[cid]['input_txes'].update(i_txes)
+    return clusters
+
+def art_cluster_with_address(clusters, addr):
+    '''
+    Return the cluster id containing the given address, or None otherwise. Use
+    this only with artificial clusters built using build_art_clusters().
+    '''
+    for cid, d in clusters.items():
+        if addr in d['addrs']:
+            return cid
+    return None
 
 def multiinput_only(chain, cdir, height=0):
     ''' Generate multi-input only heuristic, with limited height'''
@@ -29,12 +123,27 @@ def multiinput_only(chain, cdir, height=0):
     return cm
 
 def multiinput_change(chain, cdir, height=0):
+    '''
+    Generate multi-input + client_change_address_behavior heuristics According
+    to the docs:
+        Most clients will generate a fresh address for the change. If an output
+        is the first to send value to an address, it is potentially the change.
+    This heuristic will use the unique_change property to cluster outputs only
+    when there is one candidate change address output.
+    '''
+    ab_ch = blocksci.heuristics.change.client_change_address_behavior.unique_change
+    stop = (height+1) if height else -1
+    cm = blocksci.cluster.ClusterManager.create_clustering(location=cdir,
+                chain=chain, stop=stop, heuristic=ab_ch)
+    return cm
+
+def multiinput_change_legacy(chain, cdir, height=0):
     ''' Generate multi-input + legacy change address detection heuristics'''
-    if height:
-        return blocksci.cluster.ClusterManager.create_clustering(location=cdir,
-                chain=chain, stop=height+1)
-    else:
-        return blocksci.cluster.ClusterManager.create_clustering(cdir, chain)
+    l_ch = blocksci.heuristics.change.legacy.unique_change
+    stop = (height+1) if height else -1
+    cm = blocksci.cluster.ClusterManager.create_clustering(location=cdir,
+                chain=chain, stop=stop, heuristic=l_ch)
+    return cm
 
 def multiinput_reusechange(chain, cdir):
     ''' Generate multi-input + reuse change address detection heuristics'''
@@ -58,7 +167,10 @@ def load_seeds(file, delimiter='\t'):
             seeds.update(d)
     return seeds
 
-def build_load_blocksci(config, height):
+def build_load_blocksci(config, height, change=False):
+    global cm
+    global chain
+
     try:
         chain = blocksci.Blockchain(config)
     except RuntimeError as e:
@@ -67,7 +179,8 @@ def build_load_blocksci(config, height):
 
     data_dir = os.path.dirname(config)
     h = f"_{height + 1}" if height else ''
-    mi = f"{data_dir}/clusters/multi-input{h}"
+    cdir = f"multi-input_change_legacy{h}" if change else f"multi-input{h}"
+    mi = os.path.join(data_dir, "clusters", cdir)
 
     if os.path.isdir(mi):
         logging.warning(f"Loading clusters from {mi}.")
@@ -75,7 +188,8 @@ def build_load_blocksci(config, height):
     else:
         logging.warning(f"Producing clusters in {mi}.")
         os.makedirs(mi)
-        cm = multiinput_only(chain, mi, height)
+        clustering_heuristic = multiinput_change_legacy if change else multiinput_only
+        cm = clustering_heuristic(chain, mi, height)
 
     return chain, cm
 
@@ -797,6 +911,87 @@ def extract_features(seed, chain, cm, height=0, label='unknown'):
     logging.info(msj)
     return v
 
+def predict(estimator, dataset, height, bycluster=True, tag_filter=True, debug=False):
+    X = dataset.drop(['label'], axis=1)
+    prediction = {}
+    if bycluster:
+        cids = dataset['cluster_id'].unique()
+        for cid in cids:
+            if tag_filter:
+                owner, ctag, csize = tags.search_tag_by_cluster(cid=cid, height=height)
+                if tags.is_service_owner(owner):
+                    msg = f"CID:{cid}: is a service {owner}>>{ctag}. Skipping."
+                    logging.info(msg)
+                    prediction[cid] = -1
+                    continue
+            mask = X['cluster_id'] == cid
+            idx = X[mask].index
+            cresult = estimator.predict_proba(X[mask])
+
+            # Average probability
+            avg = sum([r[0] for r in cresult]) / len(cresult)
+            cclass = 'Exchange' if avg > 0.5 else 'Non-exchange'
+            logging.info(f"AVGPROB CID:{cid}: {avg} => {cclass}")
+            prediction[cid] = avg
+
+            # Majority voting
+            avg = sum([1 for r in cresult if r[0] > 0.5]) / len(cresult)
+            cclass = 'Exchange' if avg > 0.5 else 'Non-exchange'
+            logging.info(f"MAJVOTE CID:{cid}: {avg} => {cclass}")
+
+            # One positive voting
+            avg = sum([1 for r in cresult if r[0] > 0.5])
+            cclass = 'Exchange' if avg > 0 else 'Non-exchange'
+            logging.info(f"INDVOTE CID:{cid}: {avg} => {cclass}")
+
+            # Individual results
+            if debug:
+                prediction_results(cresult, dataset, idx)
+    else:
+        results = estimator.predict_proba(X)
+        prediction['all'] = results
+        if debug:
+            # TODO check the idx value
+            prediction_results(results, dataset, dataset.index)
+    return prediction
+
+def prediction_results(results, dataset, idx):
+    for i, n in enumerate(idx):
+        iclass = 'Exchange' if results[i][0] > 0.5 else 'Non-exchange'
+        addr = dataset.iloc[n]['address']
+        cid = dataset.iloc[n]['cluster_id']
+        logging.info(f"{cid}:{addr}: {results[i]} => {iclass}")
+
+def address_feature_extraction(addr, height):
+    global cm
+    global chain
+
+    vectors = extract_features_range({addr: None}, chain, cm, height)
+
+    return pd.DataFrame(data=vectors, columns=vectors[0].keys())
+
+def clusters_feature_extraction(cids, height, skip_services=True):
+    global cm
+    global chain
+
+    g_vectors = []
+    for cid in cids:
+        c = cm.clusters()[cid]
+        owner, ctag, csize = tags.search_tag_by_cluster(cid=cid, height=height)
+        if skip_services and tags.is_service_owner(owner):
+            m = f"CID:{cid}: is a service {owner}>>{ctag}. Skipping."
+            logging.info(m)
+            continue
+
+        addrs = {a: None for a in c.addresses.to_list()}
+        vectors = extract_features_range(addrs, chain, cm, height)
+        g_vectors.extend(vectors)
+
+    if g_vectors:
+        return pd.DataFrame(data=g_vectors, columns=g_vectors[0].keys())
+    else:
+        return None
+
 def bitmex_classifier(addr, chain):
     global bmex_addrs
     if not bmex_addrs:
@@ -817,8 +1012,8 @@ def expand(seed, chain, cm, clusters, height, ticker):
     cluster = cm.cluster_with_address(seed)
     cid = cluster.index
     # TODO Avoid expanding service-tagged clusters
-    ctag, csize = tags.search_tag_by_cluster(cid=cid, chain=chain, cm=cm,
-            height=height, ticker=ticker)
+    owner, ctag, csize = tags.search_tag_by_cluster(cid=cid, chain=chain,
+            cm=cm, height=height, ticker=ticker)
     logging.info(f"\tCTag: {ctag}")
 #    if tags.is_service_ctag(ctag):
 #        logging.info(f"\tCluster {cid} is a service. Skipping.")
@@ -835,10 +1030,12 @@ def expand(seed, chain, cm, clusters, height, ticker):
 
 
 def main(args):
-    seeds = load_seeds(args.inputfile)
+    global chain, cm
 
     # Load the blockchain
     chain, cm = build_load_blocksci(args.blocksci, args.height)
+
+    seeds = load_seeds(args.inputfile)
 
     # Expand the initial seeds
     if args.expand:
@@ -870,7 +1067,7 @@ def main(args):
 if __name__ == '__main__':
     usage = "\n\n\tExtract a set of features from a list of bitcoin" +\
             " addresses, and write the results into a file."
-    version = '2.0.1'
+    version = '2.4.2'
     parser = argparse.ArgumentParser(description=usage)
     parser.add_argument('-D', '--blocksci', dest='blocksci', action='store',
             type=str, help='Blocksci config file')
@@ -900,6 +1097,8 @@ if __name__ == '__main__':
 
     logging.basicConfig(level=logging.DEBUG)
     logging.debug(f"Made with version {version}")
+    logging.debug(f"- added support for change-address clustering heuristic")
+    logging.debug(f"- added support for art-clusters")
     logging.debug(f"- changed OpReturn string repr (now is data in hex)")
     logging.debug(f"- fixed segfault from buggy equiv addr")
     logging.debug(f"{args}")

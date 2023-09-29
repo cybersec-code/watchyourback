@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 
 import os
+import json
+import glob
 import argparse
 import blocksci
 import networkx as nx
@@ -55,7 +57,7 @@ def addr_graph(saddr, addr, txes, height=0, prune=False):
     tsent = sum(addr.inputs.value)
     balance = addr.balance(height) if height else addr.balance()
     node = {'type': 'addr', 'value': trecv, 'trecv': trecv,
-            'tsent': tsent, 'balance': balance}
+            'tsent': tsent, 'cj': len(txes['coinjoin']), 'balance': balance}
     G.add_node(saddr, attrs=node)
 
     # Deposit txes
@@ -64,7 +66,7 @@ def addr_graph(saddr, addr, txes, height=0, prune=False):
         value = sum([o.value for o in tx.outputs if o.address==addr])
         slots = [str(o.index) for o in tx.outputs if o.address==addr]
         ts = tx.block.timestamp
-        index = tx.index
+        index = tx.hash
         tname = f"{t_}:{index}"
         fdate = datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d')
         btc_price = price.get_price(fdate)
@@ -95,7 +97,7 @@ def addr_graph(saddr, addr, txes, height=0, prune=False):
         value = sum([i.value for i in tx.inputs if i.address==addr])
         slots = [str(i.index) for i in tx.inputs if i.address==addr]
         ts = tx.block.timestamp
-        index = tx.index
+        index = tx.hash
         tname = f"{t_}:{index}"
         fdate = datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d')
         btc_price = price.get_price(fdate)
@@ -128,7 +130,7 @@ def graph_compose_from_list(graphs, clear=False):
             graphs[i].clear()
     return final_graph
 
-def draw_addr_graphs(g, addr_info, layout='graphviz', fn=''):
+def draw_addr_graphs(g, addr_info, serv_txes, layout='graphviz', fn=''):
     '''
     Produce a gml file with the address graph given, with a specific layout.
 
@@ -155,7 +157,7 @@ def draw_addr_graphs(g, addr_info, layout='graphviz', fn=''):
         pos = nx.spring_layout(g, k=0.7, iterations=20)
 
     logging.info(f"Saving {fn} in gml format")
-    gformat = gml_format(g, pos, addrs)
+    gformat = gml_format(g, pos, addrs, serv_txes)
     nx.readwrite.gml.write_gml(gformat, f"{fn}.gml")
 
 def get_color(operation, tagged, cj, far, color):
@@ -181,7 +183,7 @@ def get_color(operation, tagged, cj, far, color):
         color = f"#00{color}00" # Some green
     return color
 
-def gml_format(G, pos, addr_info):
+def gml_format(G, pos, addr_info, serv_txes):
     '''
     Give GML format to a nx.DiGraph object by adding some fields to specify
     the position of the nodes, its color, its type, etc.
@@ -199,14 +201,19 @@ def gml_format(G, pos, addr_info):
         G.nodes[x]['graphics']['x'] = pos[x][0]
         G.nodes[x]['graphics']['y'] = pos[x][1]
         G.nodes[x]['graphics']['z'] = 0
-        value = G.nodes[x]['attrs']['value'] #* 1e-8
-        G.nodes[x]['value'] = value * 1.0
+        value = int(G.nodes[x]['attrs']['value'])
+        G.nodes[x]['value'] = value
         if G.nodes[x]['attrs']['type'] == 'tx':
             ts = G.nodes[x]['attrs']['ts']
-            label = f"{x} | {ts} | BTC: {value}"
+            label = f"{x} | {ts} | BTC: {value * 1e-8:.8f}"
             G.nodes[x]['type'] = 'tx'
             G.nodes[x]['Polygon'] = 4
-            G.nodes[x]['graphics']['fill'] = '#0000ff'
+            if x in serv_txes['serv']:
+                G.nodes[x]['graphics']['fill'] = '#000088'
+            elif x in serv_txes['multi']:
+                G.nodes[x]['graphics']['fill'] = '#004c88'
+            else:
+                G.nodes[x]['graphics']['fill'] = '#0000ff'
         elif G.nodes[x]['attrs']['type'] == 'pubkey':
             label = f"{x}"
             G.nodes[x]['type'] = 'pubkey'
@@ -222,10 +229,12 @@ def gml_format(G, pos, addr_info):
             G.nodes[x]['service'] = addr_info[x].service
             G.nodes[x]['step'] = addr_info[x].step
             G.nodes[x]['seed'] = addr_info[x].seed
+            G.nodes[x]['exprank'] = addr_info[x].txes['exp_rank']
             G.nodes[x]['steplabel'] = f"{addr_info[x].step}:{x}"
             G.nodes[x]['Polygon'] = 0
-            if addr_info[x].blacklist:
-                G.nodes[x]['type'] = 'blacklist'
+            G.nodes[x]['coinjoin'] = G.nodes[x]['attrs']['cj']
+            if addr_info[x].blocklist:
+                G.nodes[x]['type'] = 'blocklist'
                 G.nodes[x]['graphics']['fill'] = '#000000'
                 label = f'{x}'
             elif addr_info[x].exch:
@@ -244,9 +253,9 @@ def gml_format(G, pos, addr_info):
                 color = hex(0xff - (0x10 * step)).replace('0x', '')
                 trecv = G.nodes[x]['attrs']['trecv'] * 1e-8
                 tsent = G.nodes[x]['attrs']['tsent'] * 1e-8
-                label = f"{step} | {addr_info[x].cid} | {x}"
-                label += f" | Recv: {trecv}"
-                label += f" | Sent: {tsent}"
+                label = f"s{step} | {x}:{addr_info[x].cid}"
+                label += f" | Recv: {trecv:.8f} BTC"
+                label += f" | Sent: {tsent:.8f} BTC"
                 label += ' | COINJOIN' if cj else ''
                 label += ' | FAR' if far else ''
                 G.nodes[x]['prediction'] = addr_info[x].pred
@@ -256,8 +265,10 @@ def gml_format(G, pos, addr_info):
                 G.nodes[x]['graphics']['fill'] = color
                 # Change color and label to nodes with utxos
                 if x in utxos:
-                    ul = ','.join([f"{u[0]}:{u[1]}" for u in sorted(utxos[x])])
-                    label += f" | UTXOS: {ul}"
+#                    ul = ','.join([f"{u[0]}:{u[1]}" for u in sorted(utxos[x])])
+#                    label += f" | UTXOS: {ul}"
+                    ul = sum([u[2] for u in utxos[x]])
+                    label += f" | UTXOS ({len(utxos[x])}): {ul/1e8:.8f} BTC"
                     b = G.nodes[x]['attrs']['balance']
                     label += f" | Balance: {b}"
                     # TODO do we want to color addrs with UTXOS?
@@ -449,7 +460,7 @@ def explosion_node_rank(G, height, threshold=0):
 
     return out_map
 
-def components(G):
+def components(G, fname=''):
     '''
     Return the list of connected components in a graph.
 
@@ -462,16 +473,36 @@ def components(G):
     logging.info(f"Components in the graph: {len(comp)}")
     seeds = {x for x in G.nodes if 'seed' in G.nodes[x] and G.nodes[x]['seed']}
     tagged = {x for x in G.nodes \
-            if 'fulltag' in G.nodes[x] and G.nodes[x]['fulltag']}
+            if ('fulltag' in G.nodes[x] and G.nodes[x]['fulltag']) \
+                or ('owner' in G.nodes[x] and G.nodes[x]['owner']) \
+                or ('ctags' in G.nodes[x] and G.nodes[x]['ctags'])}
+    jsonf = []
     for n, c in enumerate(sorted(comp, key=len, reverse=True)):
+        logging.info(f"Component {n}:")
+        logging.info(f"\tNodes: {len(c)}")
         s = seeds & c
-        logging.info(f"Found {len(s)} seeds in component {n}")
-        if s:
-            logging.info(f"{','.join(s)}")
-        t = tagged & c
-        logging.info(f"Found {len(t)} tagged nodes in component {n}")
-        if t:
-            logging.info(f"{', '.join(t)}")
+        logging.info(f"\tSeeds: {len(s)}")
+        jseeds = []
+        jtags = {}
+        for x in sorted(s):
+            logging.info(f"\t\t{x}")
+            jseeds.append(x)
+        t = {x: G.nodes[x]['fulltag'] for x in (tagged & c)}
+        logging.info(f"\tTagged nodes: {len(t)}")
+        for x, xt in sorted(t.items(), key=lambda n: n[1]):
+            logging.info(f"\t\t{x} {xt}")
+            jtags.update({x: xt})
+        j = {
+                'component': n,
+                'nodes': len(c),
+                'nseeds': len(s),
+                'ntagged': len(t),
+                'seeds': jseeds,
+                'tagged': jtags
+            }
+        jsonf.append(j)
+    with open(fname, 'w') as f:
+        f.write('\n'.join([json.dumps(j) for j in jsonf]))
     return comp
 
 def tagged_nodes(G, height, split=False, services=False):
@@ -493,6 +524,10 @@ def tagged_nodes(G, height, split=False, services=False):
         cseeds = {G.nodes[x]['cluster'] for x in G.nodes \
                 if 'seed' in G.nodes[x] and G.nodes[x]['seed']}
         seeds = {x for x in tagged if G.nodes[x]['cluster'] in cseeds}
+        # in case the seeds are not tagged:
+        if not seeds:
+            seeds = {x for x in G.nodes if 'cluster' in G.nodes[x] and G.nodes[x]['cluster'] in cseeds}
+            tagged.update({x: 'seed=seed' for x in seeds})
         if services:
             target = {x for x in G.nodes if 'ctags' in G.nodes[x] \
                     and tags.is_service_ctags(G.nodes[x]['ctags'])}
@@ -550,7 +585,7 @@ def decorate(G, blockscip, ticker, paths, tagged, height=0):
                 else: # transaction or pubkey
                     try:
                         (t_, t) = e.split(':')
-                        tx = chains[t_].tx_with_index(int(t))
+                        tx = chains[t_].tx_with_hash(t)
                         node = f"{e}({tx.input_count}|{tx.output_count})"
                         addr_to_tx = True
                         pk = None
@@ -735,9 +770,17 @@ def init_blocksci(blockscip, ticker, height=0):
     global chains
     global cms
 
-    chain, cm = bs_fs.build_load_blocksci(blockscip, height)
-    chains = {ticker: chain}
-    cms = {ticker: cm}
+#    chain, cm = bs_fs.build_load_blocksci(blockscip, height)
+#    chains = {ticker: chain}
+#    cms = {ticker: cm}
+
+    # TODO Crosschain config
+    data_dir = '/data/BlockSci'
+    chains = {
+            'btc': blocksci.Blockchain(f"{data_dir}/btc.cfg"),
+            #'bch': blocksci.Blockchain(f"{data_dir}_Bitcoincash/bch.cfg"),
+            'ltc': blocksci.Blockchain(f"{data_dir}_Litecoin/ltc.cfg")
+        }
 
     return all(chains)
 
@@ -745,7 +788,7 @@ def print_table(g):
     comp = len(list(nx.connected_components(g.to_undirected())))
     addr = len([n for n in g.nodes if g.nodes[n]['type'] != 'tx'])
     tx = len([n for n in g.nodes if g.nodes[n]['type'] == 'tx'])
-    unexp = len([n for n in g.nodes if g.nodes[n]['type'] == 'blacklist'])
+    unexp = len([n for n in g.nodes if g.nodes[n]['type'] == 'blocklist'])
     seeds = len([n for n in g.nodes \
             if 'seed' in g.nodes[n] and g.nodes[n]['seed'] == 1])
     texch = len([n for n in g.nodes if 'service' in g.nodes[n] and
@@ -791,12 +834,12 @@ def prune_graph(G):
         ins_n = {src: G.nodes[src] for (src, dst, attrs) in ins if not \
                     ('type' in G.nodes[src] and \
                         (G.nodes[src]['type'] == 'exchange' or \
-                        G.nodes[src]['type'] == 'blacklist')
+                        G.nodes[src]['type'] == 'blocklist')
                     )}
         outs_n = {dst: G.nodes[dst] for (src, dst, attrs) in outs if not \
                     ('type' in G.nodes[dst] and \
                         (G.nodes[dst]['type'] == 'exchange' or \
-                        G.nodes[dst]['type'] == 'blacklist')
+                        G.nodes[dst]['type'] == 'blocklist')
                     )}
         visit.update({n: attrs for n, attrs in ins_n.items() \
                 if n not in visited})
@@ -812,10 +855,28 @@ def main(args):
     if args.table:
         print_table(args.graph)
         return
+
     if args.prune:
         G = prune_graph(args.graph)
         nx.readwrite.gml.write_gml(G, f"{args.prune}.gml")
         return
+
+    if args.compose:
+        ngraphs = len(args.compose)
+        graph_list = []
+        logging.info(f"Composing {ngraphs} graphs")
+        for g in args.compose:
+            try:
+                graph_list.append(nx.readwrite.gml.read_gml(g))
+            except e:
+                logging.error(e)
+                logging.error(f"Error reading {g}. Exiting.")
+                return
+        G = graph_compose_from_list(graph_list, clear=True)
+        ofile = os.path.join(args.output, f"{ngraphs}_graphs.gml")
+        nx.readwrite.gml.write_gml(G, ofile)
+        return
+
     if args.directed or args.undirected:
         tagged, seeds, paths = all_disjoint_paths(args.graph, args.height,
                 args.directed, args.cashouts, args.deposits, args.ignore_ec)
@@ -878,10 +939,10 @@ def main(args):
                 path = paths[0]
                 logging.info('\n'.join([s.join(p) for p in path]))
     elif args.components:
-        components(args.graph)
+        components(args.graph, args.components)
 
 if __name__ == '__main__':
-    version = "2.0.1"
+    version = "2.4.2"
     parser = argparse.ArgumentParser()
     parser.add_argument('-g', '--graph', action='store', type=str,
             help='Graph in GML format')
@@ -902,7 +963,7 @@ if __name__ == '__main__':
     parser.add_argument('-P', '--upaths', action='store', type=str,
             help='Search undirected disjoint paths between src:dst nodes')
     parser.add_argument('-C', '--components', action='store_true',
-            help='Get information about connected components, ordered by size')
+            help='Output connected components information of this graph')
     parser.add_argument('-D', '--decorate', action='store', default=None,
             help='BlockSci config file, used to load blockchain data used to \
                     decorate paths with address tags and txes size (ins/outs)')
@@ -915,18 +976,53 @@ if __name__ == '__main__':
             addresses')
     parser.add_argument('-H', '--height', action='store', default=0, type=int,
             help='Height for the cluster tags')
+    parser.add_argument('-O', '--output', action='store', type=str,
+            help='Name for the output folder', default='')
+    parser.add_argument('-G', '--compose', action='append', default=None,
+            help='Compose several graphs in GML format into a single file')
     parser.add_argument('-v', '--version', action='version', version=version)
 
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.DEBUG)
     logging.debug(f"Made with version {version}")
+    logging.debug(f"- Added colors for service and multiservice txes")
+    logging.debug(f"- Added exp_rank to the graph")
+    logging.debug(f"- Added --compose parameter")
+    logging.debug(f"- Use tx.hash instead of tx.index")
+    logging.debug(f"- Added full tags (ctag>>tag)")
+    logging.debug(f"- Added tx-slots to graph edges")
+    logging.debug(f"- Updated summary")
+    logging.debug(f"- Fix initial addresses and rates in path search")
+    logging.debug(f"- Changed directed path search (Services summary)")
+    logging.debug(f"- Removed OP_RETURN addrs from path search")
+    logging.debug(f"- Implemented op-search with cross-chain")
+    logging.debug(f"- Implemented path search with cross-chain")
+    logging.debug(f"- Added ticker to txes")
+    logging.debug(f"- Added ticker parameter")
+    logging.debug(f"- Added 'summary' of services found for cashouts/deposits")
+    logging.debug(f"- Added 'mining' tag as a service")
+    logging.debug(f"- Fixed: search for all tagged nodes for cashouts/deposits")
+    logging.debug(f"- Exchange-classified nodes are considered tagged when")
+    logging.debug(f"    splitting paths with tags>1 unless using --ignore-ec")
     logging.debug(f"{args}")
 
-    if not args.graph or not os.path.isfile(args.graph):
+    if args.compose and not os.path.isdir(args.compose[0]):
+        for g in args.compose:
+            if not os.path.isfile(g):
+                e = 'File {g} not found'
+                parser.error(e)
+    elif args.compose and os.path.isdir(args.compose[0]):
+        e = f"Graph files not found in {args.compose[0]}"
+        args.compose = [g for g in glob.glob(f"{args.compose[0]}/*.gml")]
+        if not args.compose:
+            parser.error(e)
+    elif not args.graph or not os.path.isfile(args.graph):
         e = 'Graph file not found.'
         parser.error(e)
     else:
+        if args.components:
+            args.components = args.graph.replace('.gml', '_components.jsonl')
         args.graph = nx.readwrite.gml.read_gml(args.graph)
 
     if args.decorate and not os.path.isfile(args.decorate):

@@ -21,12 +21,12 @@ tags_dir = os.path.join(file_path, '..', '..', 'data', 'tagging')
 dbs = {}
 tcs = {}
 
-def build(chain, cm, ticker='btc', height=0):
+def build(chain, cm, ticker='btc', height=0, change=False):
     build_address_tags(ticker)
-    clean_address_tags(ticker, height)
-    build_cluster_tags(chain, cm, ticker, height)
-    clean_cluster_tags(cm, ticker, height)
-    produce_owner_user_tags(ticker, height)
+    clean_address_tags(ticker, height, change)
+    build_cluster_tags(chain, cm, ticker, height, change)
+    clean_cluster_tags(cm, ticker, height, change)
+    produce_owner_user_tags(ticker, height, change)
 
 def build_address_tags(ticker='btc'):
     '''
@@ -49,10 +49,13 @@ def build_address_tags(ticker='btc'):
 
     # Read all sources (*.tags)
     db = pd.DataFrame()
-    # Old special files
-    tag_f = ["_all", "_all-mi", "_all_clean", "_all-mi_clean"]
-    # New special files
-    tag_f.extend(["_solved", "_solved-mi", "_unsolved", "_unsolved-mi"])
+    # Special files
+    tag_f = ["_all", "_all-mi", "_all-mi-ca", "_all-mi-ca-l", "_solved", "_solved-mi"]
+    tag_f.extend(["_solved-ca", "_solved-mi-ca"])
+    tag_f.extend(["_solved-ca-l", "_solved-mi-ca-l"])
+    tag_f.extend(["_unsolved", "_unsolved-mi"])
+    tag_f.extend(["_unsolved-ca", "_unsolved-mi-ca"])
+    tag_f.extend(["_unsolved-ca-l", "_unsolved-mi-ca-l"])
     for path in Path(tags_dir).rglob('*.tags'):
         logging.debug(f"Reading tags file: {path.name}")
         if any([path.name.endswith(f"{p}.tags") for p in tag_f]):
@@ -83,12 +86,13 @@ def build_address_tags(ticker='btc'):
     logging.info(f"Built {n} {ticker} tags, for {u} unique addresses.")
     dbs[ticker] = db
 
-def build_cluster_tags(chain=None, cm=None, ticker='btc', height=0):
+def build_cluster_tags(chain=None, cm=None, ticker='btc', height=0,
+        change=False):
     global dbs, tcs
     db = dbs[ticker]
     names = ['cid', 'size', 'tags']
     c_height = f"_h{height+1}" if height else ''
-    name = f"{ticker}{c_height}_all-mi.tags"
+    name = f"{ticker}{c_height}_all-mi{'-ca-l' if change else ''}.tags"
     fn = os.path.join(tags_dir, name)
 
     # Build a dict with cluster tags by iterating all tagged addresses
@@ -122,7 +126,7 @@ def build_cluster_tags(chain=None, cm=None, ticker='btc', height=0):
 
     # Use *resolv_clusters.csv file to resolv conflicts
     rc = os.path.join(tags_dir, f"{ticker}_resolv_clusters.csv")
-    if os.path.isfile(rc):
+    if os.path.isfile(rc) and not change:
         logging.debug(f"Resolving cluster conflicts with file {rc}")
         names_rc = ['leader', 'ticker', 'service', 'alias']
         resolv = pd.read_csv(rc, names=names_rc, na_filter=False, comment='#')
@@ -147,11 +151,11 @@ def build_cluster_tags(chain=None, cm=None, ticker='btc', height=0):
     logging.info(f"Built {len(tc)} {ticker} clusters with tags.")
     tcs[ticker] = tc
 
-def clean_address_tags(ticker='btc', height=0):
+def clean_address_tags(ticker='btc', height=0, change=False):
     global dbs #, aliases
     db = dbs[ticker]
     height = f"_h{height+1}" if height else ''
-    uname = f"{ticker}{height}_unsolved.tags"
+    uname = f"{ticker}{height}_unsolved{'-ca-l' if change else ''}.tags"
     names = ['ticker', 'address', 'category', 'tag', 'subtype']
     fields = ['ticker', 'category', 'tag', 'subtype']
     ufn = os.path.join(tags_dir, uname)
@@ -182,6 +186,13 @@ def clean_address_tags(ticker='btc', height=0):
     idx = idx.append(db[(db.address.isin(ofac_new))&(db.address.isin(ofac_old))
             &(db.tag=='ofac-sanctions-list')].index)
 
+    # Solve binance-reserve-wallets-btc
+    brwtag = 'binance-reserve-wallets-btc'
+    brw_new = db[db.tag==brwtag].address
+    brw_old = db[db.tag=='binance'].address
+    idx = idx.append(db[(db.address.isin(brw_new))&(db.address.isin(brw_old))
+            &(db.tag==brwtag)].index)
+
     # Solve hydra tormarket and OFAC
     hydra = db[db.tag=='hydra-market'].address
     idx = idx.append(db[(db.address.isin(hydra))&(db.address.isin(ofac_new))
@@ -191,6 +202,17 @@ def clean_address_tags(ticker='btc', height=0):
     apt29 = db[(db.category=='state-sponsored')&(db.tag=='apt29')].address
     idx = idx.append(db[(db.address.isin(apt29))&(db.address.isin(ofac_new))
             &(db.tag==ofactag)].index)
+
+    # al-kaeda-campaign tags are already included
+    u = 'https://www.justice.gov/opa/press-release/file/1304296/download'
+    aqc = db[db.tag=='al-qaeda-campaign'].address
+    idx = idx.append(db[(db.address.isin(aqc))&(db.url==u)].index)
+
+    # Solve exchange-scam
+    exscam = db[db.category=='exchange-scam'].address
+    scam = db[db.category=='scam'].address
+    idx = idx.append(db[(db.address.isin(exscam))&(db.address.isin(scam))
+            &(db.category=='scam')].index)
 
     db.drop(idx, inplace=True)
 
@@ -239,7 +261,7 @@ def clean_address_tags(ticker='btc', height=0):
     unsolved.to_csv(ufn, index=None, header=None)
     dbs[ticker] = pd.DataFrame(data=solved, columns=names)
 
-def clean_cluster_tags(cm, ticker='btc', height=0):
+def clean_cluster_tags(cm, ticker='btc', height=0, change=False):
     global tcs
     tc = tcs[ticker]
     untc = {}
@@ -294,23 +316,23 @@ def clean_cluster_tags(cm, ticker='btc', height=0):
     logging.info(msg)
 
     # Save solved clusters
-    save_cluster_dataset(tc, ticker, height)
+    save_cluster_dataset(tc, ticker, height, change=change)
 
     # Save unsolved clusters
-    save_cluster_dataset(untc, ticker, height, solved=False)
+    save_cluster_dataset(untc, ticker, height, solved=False, change=change)
 
     tcs[ticker] = tc
 
-def save_cluster_dataset(tc, ticker='btc', height=0, solved=True):
+def save_cluster_dataset(tc, ticker='btc', height=0, solved=True, change=False):
     c_height = f"_h{height+1}" if height else ''
 
     if solved:
         names = ['cid', 'size', 'owner', 'tags']
-        name = f"{ticker}{c_height}_solved-mi.tags"
+        name = f"{ticker}{c_height}_solved-mi{'-ca-l' if change else ''}.tags"
         data = [(c, d['size'], d['owner'], d['tags']) for c, d in tc.items()]
     else:
         names = ['cid', 'size', 'tags']
-        name = f"{ticker}{c_height}_unsolved-mi.tags"
+        name = f"{ticker}{c_height}_unsolved-mi{'-ca-l' if change else ''}.tags"
         data = [(c, d['size'], d['tags']) for c, d in tc.items()]
 
     fn = os.path.join(tags_dir, name)
@@ -372,12 +394,12 @@ def remove_tld(tag):
         tmptag = tag
     return tmptag
 
-def produce_owner_user_tags(ticker, height):
+def produce_owner_user_tags(ticker, height, change=False):
     global dbs, tcs
     db = dbs[ticker]
     tc = tcs[ticker]
     height = f"_h{height+1}" if height else ''
-    name = f"{ticker}{height}_solved.tags"
+    name = f"{ticker}{height}_solved{'-ca-l' if change else ''}.tags"
     names = ['ticker', 'cid', 'address', 'owner', 'user']
     fn = os.path.join(tags_dir, name)
     solved = list()
@@ -403,12 +425,12 @@ def produce_owner_user_tags(ticker, height):
     if os.path.isfile(f):
         logging.debug(f"Including BTC-imported addresses in {f}")
         imported = pd.read_csv(f, names=names, na_filter=False, comment='#')
-        db = solve_owner_conflicts(db, imported, ticker, height)
+        db = solve_owner_conflicts(db, imported, ticker, height, change)
         dbs[ticker] = db
 
     dbs[ticker].to_csv(fn, index=None, header=None)
 
-def solve_owner_conflicts(db, imported, ticker, height):
+def solve_owner_conflicts(db, imported, ticker, height, change=False):
     global tcs
     tc = tcs[ticker]
 
@@ -457,7 +479,7 @@ def solve_owner_conflicts(db, imported, ticker, height):
     db = pd.concat([db, imported], ignore_index=True)
 
     # Update the owner in already solved clusters
-    save_cluster_dataset(tc, ticker, height)
+    save_cluster_dataset(tc, ticker, height, change=change)
     tcs[ticker] = tc
 
     # TODO Update unsolved clusters
@@ -469,11 +491,11 @@ def add_cluster_tags(gimported, c):
     ctags = gimported[['ticker', 'user']].agg('='.join, axis=1).values
     return ';'.join(sorted(set(c['tags'].split(';') + list(ctags))))
 
-def load_address_tags(ticker='btc', height=0):
+def load_address_tags(ticker='btc', height=0, change=False):
     global dbs
     names = ['ticker', 'cid', 'address', 'owner', 'user']
     c_height = f"_h{height+1}" if height else ''
-    name = f"{ticker}{c_height}_solved.tags"
+    name = f"{ticker}{c_height}_solved{'-ca-l' if change else ''}.tags"
     fn = os.path.join(tags_dir, name)
     db = pd.read_csv(fn, names=names, na_filter=False)
     n = db.shape[0]
@@ -482,15 +504,15 @@ def load_address_tags(ticker='btc', height=0):
     dbs[ticker] = db
     return dbs
 
-def load_cluster_tags(ticker='btc', height=0):
+def load_cluster_tags(ticker='btc', height=0, change=False):
     global dbs
     global tcs
     if ticker not in dbs:
-        dbs = load_address_tags(ticker=ticker, height=height)
+        dbs = load_address_tags(ticker=ticker, height=height, change=change)
     db = dbs[ticker]
     names = ['cid', 'size', 'owner', 'tags']
     c_height = f"_h{height+1}" if height else ''
-    name = f"{ticker}{c_height}_solved-mi.tags"
+    name = f"{ticker}{c_height}_solved-mi{'-ca-l' if change else ''}.tags"
     fn = os.path.join(tags_dir, name)
 
     df = pd.read_csv(fn, names=names, na_filter=False)
@@ -501,21 +523,21 @@ def load_cluster_tags(ticker='btc', height=0):
 
     return tcs
 
-def search_tag(addr, ticker='btc', height=0):
+def search_tag(addr, ticker='btc', height=0, change=False):
     global dbs
     if ticker not in dbs:
-        dbs = load_address_tags(ticker=ticker, height=height)
+        dbs = load_address_tags(ticker=ticker, height=height, change=change)
     db = dbs[ticker]
     saddr = addr if isinstance(addr, str) else bfe.addr_to_string(addr)
     tags = db[db.address==saddr][['owner', 'user']].values
     owner, user = tags[0] if tags.size > 0 else ('', '')
-    return owner, user
+    return owner, user, tags
 
 def search_tag_by_cluster(addr=None, chain=None, cm=None, cid=None,
-        ticker='btc', height=0):
+        ticker='btc', height=0, change=False):
     global tcs
     if ticker not in tcs:
-        tcs = load_cluster_tags(ticker=ticker, height=height)
+        tcs = load_cluster_tags(ticker=ticker, height=height, change=change)
     tc = tcs[ticker]
     if cid is None:
         if isinstance(addr, str):
@@ -552,20 +574,21 @@ def is_service_owner(owner):
     '''Determine if this owner-tag is a service.'''
     if not owner or owner == 'unknown':
         return ''
+    if owner == 'more-than-one':
+        return 'more-than-one'
     [cat, tag] = owner.split('=')
     services = ['exchange', 'onlinewallet', 'defi', 'mixer', 'tormarket']
     services += ['gambling', 'mining', 'payment-processor', 'service']
-    services += ['more-than-one']
     return cat if cat in services else ''
 
 
 def main(args):
 
     # Load BlockSci parsed data
-    chain, cm = bfe.build_load_blocksci(args.blocksci, args.height)
+    chain, cm = bfe.build_load_blocksci(args.blocksci, args.height, args.change)
 
     if args.build:
-        build(chain, cm, args.ticker, args.height)
+        build(chain, cm, args.ticker, args.height, args.change)
         return
 
 
@@ -582,6 +605,8 @@ if __name__ == "__main__":
             help='Blockchain height to analyze')
     parser.add_argument('-f', '--fork', action='store', default=0, type=int,
             help='Height of the fork from Bitcoin (e.g. for BCH is 478558)')
+    parser.add_argument('-C', '--change', action='store_true', default=False,
+            help='Use change address heuristic')
     parser.add_argument('-v', '--version', action='version', version=version)
 
     args = parser.parse_args()
