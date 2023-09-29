@@ -62,12 +62,13 @@ class Exploration:
         self.visited_txes = {'btc': set(), 'bch': set(), 'ltc': set()}
         self.visit_later = {}
         self.non_visited = {}
-        self.blacklist = set()
+        self.blocklist = set()
         self.directions = defaultdict(set)
         self.addrtxes = {}
         self.addr_info = {}
         self.cross_join = defaultdict(set)
         self.opclusters = set()
+        self.serv_txes = {'serv': set(), 'multi': set()}
         self.step = 0
 
     def load_glupteba_keys(self):
@@ -142,7 +143,7 @@ class Exploration:
 
 
     def build_addr(self, addr, txes, cid=None, cowner=None, ctags=None,
-            csize=None, exch=False, blacklist=False, ticker=None):
+            csize=None, exch=False, blocklist=False, ticker=None):
         """
         Build the context of a Bitcoin address. If the cluster it belongs to is
         tagged as a service it won't be explored. Services are:
@@ -152,7 +153,7 @@ class Exploration:
         h = self.height if t == 'btc' else 0
         name = bfe.addr_to_string(addr)
         fname = f"{t}:{name}"
-        owner, tag = tags.search_tag(name, t, h)
+        owner, tag, _ = tags.search_tag(name, t, h)
         key = (t, addr)
         ckey = (t, cid)
         service = ''
@@ -193,7 +194,7 @@ class Exploration:
         step = self.step
         address = Address(addr, txes, cid=cid, owner=cowner, tag=tag,
                 ctags=ctags, csize=csize, step=step, seed=is_seed, exch=exch,
-                blacklist=blacklist, service=service, ticker=t)
+                blocklist=blocklist, service=service, ticker=t)
         logging.info(f"Built address {name} fulltag:{address.fulltag}")
 
         # Determine if this addr belongs to the operation
@@ -252,9 +253,9 @@ class Exploration:
         elif self.oracle == 'pony':
             op = malware.oracle_pony(addr, txes)
         elif self.oracle == 'glupteba':
-            op = malware.oracle_glupteba(addr, txes['w_txes'], self.glup_keys)
-        elif self.oracle == 'bitab':
-            op = malware.oracle_bitab(addr)
+            op = malware.oracle_glupteba(txes['w_txes'], self.glup_keys)
+        elif self.oracle == 'deadbolt':
+            op = malware.oracle_deadbolt(txes['w_txes'])
 
         if op and op['perc'] >= 0.5:
             address.update(op=op)
@@ -750,8 +751,8 @@ class Exploration:
                 w_addrs = all_wa - self.seen
                 self.seen.update(w_addrs)
 
-            d_found.update(self.add_or_blacklist(node, d_addrs, d, 'd'))
-            w_found.update(self.add_or_blacklist(node, w_addrs, d, 'w'))
+            d_found.update(self.add_or_blocklist(node, d_addrs, d, 'd'))
+            w_found.update(self.add_or_blocklist(node, w_addrs, d, 'w'))
 
         logging.info(f"{tckr}:{node}: Found {len(d_found)} {d}d addresses")
         logging.info(f"{tckr}:{node}: Found {len(w_found)} {d}w addresses")
@@ -759,11 +760,11 @@ class Exploration:
         return d_found, w_found
 
 
-    def add_or_blacklist(self, node, addrs, d, dd):
+    def add_or_blocklist(self, node, addrs, d, dd):
         '''
         Every new address found is build for a set of txes, cid, tag, ctags
         (if any) and explosion rank (maxexprank). If the addr has a service tag
-        we don't want to explore it. If args.maxexprank is set, we blacklist
+        we don't want to explore it. If args.maxexprank is set, we blocklist
         all nodes with an explosion rank higher than args.maxexprank, to don't
         explore them. The set of nodes to reach the address is updated in
         `directions` object.
@@ -795,8 +796,8 @@ class Exploration:
                 msg = f"Skipping address {tckr}:{a} with exp_rank of "
                 msg += f"{a_txes['exp_rank']}. Found as {d}{dd} of {node}."
                 logging.info(msg)
-                address.update(blacklist=True)
-                self.blacklist.add(address)
+                address.update(blocklist=True)
+                self.blocklist.add(address)
             else:
                 found[(tckr, a)].update(a_txes)
                 r = next(iter(self.directions[(tckr, node)])) \
@@ -808,11 +809,11 @@ class Exploration:
 
 
     def remaining_nodes(self):
-        """ Build graphs for exchange, blacklisted and visit_later nodes """
+        """ Build graphs for exchange, blocklisted and visit_later nodes """
         for (t_, addr), a in self.addr_info.items():
             if a.fullname not in self.addr_graphs:
                 # Trim txes of this address, we want to include explored only
-                if a.exch or a.service or a.blacklist:
+                if a.exch or a.service or a.blocklist:
                     a.visited_txes(self.visited_txes[t_])
                     # remove nodes without visited txes
                     a_tx = a.txes['d_txes'] or a.txes['w_txes']
@@ -823,9 +824,9 @@ class Exploration:
                     msg = 'Service' if a.exch or a.service else 'Blacklisted'
                     # Blacklisted addresses in exchange-clusters are exchanges
                     ckey = (t_, a.cid)
-                    if a.blacklist and ckey in self.clusters \
+                    if a.blocklist and ckey in self.clusters \
                             and self.clusters[ckey]:
-                        a.update(exch=True, blacklist=False)
+                        a.update(exch=True, blocklist=False)
                         # TODO do we need to update 'clusters' if expand=True?
                         s = next(iter(self.exchanges[ckey]))
                         self.exchanges[ckey][s].add((t_, addr))
@@ -850,7 +851,7 @@ class Exploration:
     def draw(self, g):
         """ Draw and save the graph in GML format """
         l = 'twopi'
-        graph.draw_addr_graphs(g, self.addr_info, layout=l, fn=self.output)
+        graph.draw_addr_graphs(g, self.addr_info, self.serv_txes, layout=l, fn=self.output)
 
 
     def save_files(self):
@@ -860,7 +861,7 @@ class Exploration:
         self.save_iocs()
         self.save_exchanges()
         self.save_exchanges_reached()
-        self.save_blacklisted()
+        self.save_blocklisted()
 
 
     def save_nonvisited(self):
@@ -924,6 +925,10 @@ class Exploration:
                         tx, ts, oidx = e['tx'], e['ts'], e['oidx']
                         v = e['domain']
                         fo.write(f"{name}\t{key}\t{tx}\t{oidx}\t{ts}\t{v}\n")
+                    elif self.oracle == 'deadbolt':
+                        ransom_addr = e['ransom_addr']
+                        v = e['op_ret']
+                        fo.write(f"{name}\t{ransom_addr}\t{v}\n")
                     elif self.oracle == 'bitab':
                         abuse_id = e['abuse_type_id']
                         abuse_ot = e['abuse_type_other']
@@ -962,10 +967,10 @@ class Exploration:
                         fo.write(f"{t_}:{bfe.addr_to_string(addr)}\t{cid}\n")
 
 
-    def save_blacklisted(self):
-        # Save blacklisted addresses
+    def save_blocklisted(self):
+        # Save blocklisted addresses
         with open(f"{self.output}.blk", 'w') as fo:
-            for address in sorted(self.blacklist, key=lambda x: x.fullname):
+            for address in sorted(self.blocklist, key=lambda x: x.fullname):
                 row = f"{address.fullname}\t{address.cid}"
                 row += f"\t{address.txes['exp_rank']}\n"
                 fo.write(row)
@@ -1030,7 +1035,7 @@ if __name__ == '__main__':
             exploration recursively at each step. Service addresses are not \
             explored. Produce an address-transaction graph at the end."
 
-    version = "2.0.1"
+    version = "2.1.4"
 
     parser = argparse.ArgumentParser(description=usage)
     parser.add_argument('-D', '--blocksci', dest='blocksci', action='store',
@@ -1065,8 +1070,8 @@ if __name__ == '__main__':
             action='store_true', help='Use multi-input clustering to expand \
                     found nodes when tracing transactions')
     parser.add_argument('-O', '--oracle', dest='oracle', default=None,
-            choices=['cerber', 'pony', 'glupteba', 'bitab'], help='Set the \
-                    oracle to identify operation addresses')
+            choices=['cerber', 'pony', 'glupteba', 'deadbolt'],
+            help='Set the oracle to identify operation addresses')
     parser.add_argument('-p', '--paths', dest='paths', default=False,
             action='store_true', help='Search for paths between op nodes')
     parser.add_argument('-X', '--exchanges', dest='exchanges', action='store',
@@ -1099,7 +1104,6 @@ if __name__ == '__main__':
 
     logging.basicConfig(filename=f"{args.output}.log", level=logging.DEBUG)
     logging.debug(f"Made with version {version}")
-    logging.debug(f"- Version 2.0.0")
     logging.debug(f"{args}")
 
     # Init the random seed to reproduce results when using epsilon

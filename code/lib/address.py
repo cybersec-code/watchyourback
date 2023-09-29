@@ -5,7 +5,7 @@ class Address:
 
     def __init__(self, addr, txes, cid=None, owner=None, tag=None, ctags=None,
             csize=None, step=None, pred=-1.0, op=None, seed=False, exch=False,
-            blacklist=False, service=False, ticker='btc'):
+            blocklist=False, service=False, ticker='btc'):
         self.addr = addr
         self.txes = txes
         self.name = bfe.addr_to_string(addr)
@@ -19,14 +19,14 @@ class Address:
         self.op = op
         self.seed = seed
         self.exch = exch
-        self.blacklist = blacklist
+        self.blocklist = blocklist
         self.service = service
         self.ticker = ticker
         self.fullname = f"{self.ticker}:{self.name}"
         self.fulltag = f"{self.owner}>>{self.tag}" if (owner or tag) else ''
 
     def update(self, cid=None, owner=None, tag=None, ctags=None, csize=None,
-            exch=None, blacklist=None, txes=None, pred=None, op=None):
+            exch=None, blocklist=None, txes=None, pred=None, op=None):
         if cid is not None:
             self.cid = cid
         if owner is not None:
@@ -39,8 +39,8 @@ class Address:
             self.csize = csize
         if exch is not None:
             self.exch = exch
-        if blacklist is not None:
-            self.blacklist = blacklist
+        if blocklist is not None:
+            self.blocklist = blocklist
         if txes is not None:
             self.txes = txes
         if pred is not None:
@@ -56,9 +56,11 @@ class Address:
         return self.op.isop if self.op else False
 
     def __str__(self):
+#        TODO return self.fullname
         return self.name
 
     def __repr__(self):
+#        TODO return self.fullname
         return self.name
 
 class Operation:
