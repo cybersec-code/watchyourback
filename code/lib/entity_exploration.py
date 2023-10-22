@@ -85,8 +85,8 @@ def explore_clusters(height, merge, clusters, art_c, txes, output, operation,
 def explore_cluster(cid, height, merge, cseeds, art_c=None, ignore_wd=True,
         classifier=None):
     global chain, cm
-    if chain is None or cm is None:
-        if bfe.chain is None or bfe.cm is None:
+    if chain is None:
+        if bfe.chain is None and bfe.cm is None:
             logging.error("Instances of Blocksci not found.")
             return
         else:
@@ -94,7 +94,11 @@ def explore_cluster(cid, height, merge, cseeds, art_c=None, ignore_wd=True,
             cm = bfe.cm
             chain = bfe.chain
 
-    owner, ctags, _ = search_tag(cid=cid, height=height)
+    if art_c:
+        owner, ctags = '', ''
+    else:
+        owner, ctags, _ = search_tag(cid=cid, height=height)
+
     entity = Entity(cid, owner, ctags, art_c=art_c, cm=cm, height=height,
             ignore_wd=ignore_wd)
     # TODO TESTING: Use the exchange classifier in case this may be an exchange
@@ -116,6 +120,7 @@ def explore_cluster(cid, height, merge, cseeds, art_c=None, ignore_wd=True,
                         for (t, o, p) in outs
                     },
                 }
+            # TODO use a value different than -1
             e_clusters = update_outs(-1, d, e_clusters, height, True)
             continue
 
@@ -302,8 +307,14 @@ def get_cluster(address, art_c, cm):
     cid = None
     if art_c:
         cid = bfe.art_cluster_with_address(art_c, address)
+    # cid is not found in art_c
     if cid is None:
-        cid = cm.cluster_with_address(address).index
+        # if this is a no-clustering exploration, the MI-clustering doesn't
+        # matter and the cid could be anything but -1
+        if cm is None:
+            cid = 0
+        else:
+            cid = cm.cluster_with_address(address).index
     return cid
 
 def update_outs(cid, d, e_clusters, height, deposit=True):
@@ -312,10 +323,14 @@ def update_outs(cid, d, e_clusters, height, deposit=True):
 
     if cid not in e_clusters:
 
+        #TODO use a different value than -1
         if cid == -1:
             cowner, ctags, csize = 'coinbase_txes', '', 1
         else:
-            cowner, ctags, csize = search_tag(cid=cid, height=height)
+            if cm is None:
+                cowner, ctags, csize = '', '', 1
+            else:
+                cowner, ctags, csize = search_tag(cid=cid, height=height)
 
         if csize == -1:
             c = cm.clusters()[cid]

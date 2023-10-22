@@ -167,8 +167,7 @@ def load_seeds(file, delimiter='\t'):
             seeds.update(d)
     return seeds
 
-def build_load_blocksci(config, height, change=False):
-    global cm
+def load_chain(config):
     global chain
 
     try:
@@ -176,6 +175,14 @@ def build_load_blocksci(config, height, change=False):
     except RuntimeError as e:
         logging.error(e)
         sys.exit(1)
+
+    return chain
+
+def build_load_blocksci(config, height, change=False):
+    global cm
+    global chain
+
+    chain = load_chain(config)
 
     data_dir = os.path.dirname(config)
     h = f"_{height + 1}" if height else ''

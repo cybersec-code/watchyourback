@@ -23,6 +23,9 @@ ec = set(ec_ransomwhere + ec_exchange_scams + ec_giveaway_scams)
 
 def expansion(seeds, clustering, tag_filter, height):
     global chain, cm_mi, cm_mica
+    if not chain and (not cm_mi or not cm_mica):
+        logging.error(f"Chain is not loaded. Exiting.")
+        return
 
     clusters = {}
     for seed in seeds:
@@ -88,6 +91,7 @@ def get_estimation_outs(clusters, dc, filter, height):
     else:
 
         dictmap = {cid: clusters[cid]['addrs'] for cid in clusters}
+
         art_c = bfe.build_art_clusters_from_dict(chain, dictmap, height,
                 ignore_wd=True)
         cl = dictmap.keys()
@@ -168,6 +172,10 @@ def estimation(seeds, dc, clust, filter, tag_filter, height):
 
     clusters = expansion(seeds, clust, tag_filter, height)
 
+    if not clusters:
+        logging.warning(f"The expanded set of seeds is empty.")
+        return None
+
     return get_estimation_outs(clusters, dc, filter, height)
 
 def estimation_name(args, filter=True):
@@ -180,20 +188,37 @@ def estimation_name(args, filter=True):
     dc = '-DC' if args.doublecounting else ''
     return f"DD{ow}{exp}{cf}{dc}"
 
+def load_chain(cnf, height, change=False):
+    global chain, cm_mi, cm_mica
+    if change:
+        chain, cm_mica = bfe.build_load_blocksci(cnf, height, change=change)
+    else:
+        chain, cm_mi = bfe.build_load_blocksci(cnf, height)
+
+
 def main(args):
     global chain, cm_mi, cm_mica
 
-    _, cm_mica = bfe.build_load_blocksci(args.blocksci, args.height,
-            change=True)
-    chain, cm_mi = bfe.build_load_blocksci(args.blocksci, args.height)
+    if args.clustering == "mi":
+        chain, cm_mi = bfe.build_load_blocksci(args.blocksci, args.height)
+    elif args.clustering == "mica":
+        _, cm_mica = bfe.build_load_blocksci(args.blocksci, args.height,
+                change=True)
+        chain, cm_mi = bfe.build_load_blocksci(args.blocksci, args.height)
+    else:
+        chain = bfe.load_chain(args.blocksci)
 
     if args.seeds_file:
         fseeds = pd.read_csv(args.seeds_file, names=['addr']).addr.unique()
         args.seeds = args.seeds.extend(fseeds) if args.seeds else fseeds
 
-    addrs, dep, period, btc, usd, faddrs, fdep, fperiod, fbtc, fusd = \
-            estimation(args.seeds, args.doublecounting, args.clustering,
-                    args.filter, args.tag_filter, args.height)
+    e = estimation(args.seeds, args.doublecounting, args.clustering,
+            args.filter, args.tag_filter, args.height)
+
+    if e is None:
+        logging.debug(f"Empty set of seeds.")
+    else:
+        addrs, dep, period, btc, usd, faddrs, fdep, fperiod, fbtc, fusd = e
 
     est = estimation_name(args, filter=False)
     logging.info(f"\n{est} Estimation:")
