@@ -1,11 +1,13 @@
+""" Address object to be used during the exploration """
+
 from lib import blockchain_feature_extraction as bfe
 
 class Address:
     ''' Bitcoin address and analysis-related information '''
 
     def __init__(self, addr, txes, cid=None, owner=None, tag=None, ctags=None,
-            csize=None, step=None, pred=-1.0, op=None, seed=False, exch=False,
-            blocklist=False, service=False, ticker='btc'):
+                 csize=None, step=None, pred=-1.0, op=None, seed=False,
+                 exch=False, blocklist=False, service=False, ticker='btc'):
         self.addr = addr
         self.txes = txes
         self.name = bfe.addr_to_string(addr)
@@ -26,7 +28,10 @@ class Address:
         self.fulltag = f"{self.owner}>>{self.tag}" if (owner or tag) else ''
 
     def update(self, cid=None, owner=None, tag=None, ctags=None, csize=None,
-            exch=None, blocklist=None, txes=None, pred=None, op=None):
+               exch=None, blocklist=None, txes=None, pred=None, op=None):
+        """
+        Update one or more fields of this address.
+        """
         if cid is not None:
             self.cid = cid
         if owner is not None:
@@ -48,11 +53,21 @@ class Address:
         if op is not None:
             self.op = Operation(op['perc'], op['iocs'])
 
-    def visited_txes(self, visited=set()):
+    def visited_txes(self, visited=None):
+        """
+        Set the deposit/withdrawal txes visited from this address.
+        :param visited: Set of visited txes. Only deposit/withdrawal txes in
+        the intersection with visited will remain in the graph.
+        """
+        if visited is None:
+            visited = set()
         self.txes['d_txes'] &= visited
         self.txes['w_txes'] &= visited
 
     def isop(self):
+        """
+        Determine if this address belongs to the operation explored.
+        """
         return self.op.isop if self.op else False
 
     def __str__(self):
@@ -81,4 +96,3 @@ class Operation:
 
     def __repr__(self):
         return f"IOCs: {len(self.iocs)}, rate: {self.rate}"
-
