@@ -1,10 +1,16 @@
+""" Module for exploring entities (sets of addresses of the same owner) """
+
+import os
+import json
+import copy
 import logging
-import pandas as pd
-import networkx as nx
-from joblib import load
-import copy, blocksci, json, argparse, os
+import argparse
 from datetime import datetime
 from collections import defaultdict
+from joblib import load
+import pandas as pd
+import networkx as nx
+import blocksci
 try:
     from lib import blockchain_feature_extraction as bfe
     from lib.tags import search_tag_by_cluster as search_tag
@@ -20,7 +26,21 @@ chain = None
 cm = None
 
 def explore_clusters(height, merge, clusters, art_c, txes, output, operation,
-        ignore_wd=True, save=True, classifier=None):
+                     ignore_wd=True, save=True, classifier=None):
+    """
+    Main function to explore sets of MI/MICA clusters or sets of addrs without
+    a cluster (no-cluster exploration).
+    :param height: Block height
+    :param merge: Merge all clusters (same operation)
+    :param clusters: set of clusters to explore
+    :param art_c: set of clusters to explore (non-MI/MICA clustering)
+    :param txes: include all txes found into the output files
+    :param output: name for the output files
+    :param operation: name for this operation
+    :param ignore_wd: do not explore withdrawals (only deposits)
+    :param save: save the exploration into jsonl files
+    :param classifier: exchange classifier
+    """
     merged_clusters = {}
     graphs = []
     cids = []
@@ -32,10 +52,9 @@ def explore_clusters(height, merge, clusters, art_c, txes, output, operation,
     explored = []
 
     for cid in clusters:
-        logging.info(f"Exploring cluster: {cid}")
-        entity, e_clusters = \
-                explore_cluster(cid, height, merge, clusters, art_c, ignore_wd,
-                        classifier)
+        logging.info("Exploring cluster: %s", cid)
+        entity, e_clusters = explore_cluster(cid, height, merge, clusters,
+                                             art_c, ignore_wd, classifier)
 
         if merge:
             merged_clusters = merge_clusters(merged_clusters, e_clusters)
@@ -83,16 +102,26 @@ def explore_clusters(height, merge, clusters, art_c, txes, output, operation,
     return explored
 
 def explore_cluster(cid, height, merge, cseeds, art_c=None, ignore_wd=True,
-        classifier=None):
+                    classifier=None):
+    """
+    Main function to explore a MI/MICA cluster or sets of addrs without a
+    cluster (no-cluster exploration).
+    :param cid: Cluster ID
+    :param height: Block height
+    :param merge: Merge all clusters (same operation)
+    :param cseeds: set of clusters to explore
+    :param art_c: set of clusters to explore (non-MI/MICA clustering)
+    :param ignore_wd: do not explore withdrawals (only deposits)
+    :param classifier: exchange classifier
+    """
     global chain, cm
     if chain is None:
         if bfe.chain is None and bfe.cm is None:
             logging.error("Instances of Blocksci not found.")
-            return
-        else:
-            logging.warning("Loading instances of Blocksci from bfe.")
-            cm = bfe.cm
-            chain = bfe.chain
+            return None, None
+        logging.warning("Loading instances of Blocksci from bfe.")
+        cm = bfe.cm
+        chain = bfe.chain
 
     if art_c:
         owner, ctags = '', ''
@@ -100,7 +129,7 @@ def explore_cluster(cid, height, merge, cseeds, art_c=None, ignore_wd=True,
         owner, ctags, _ = search_tag(cid=cid, height=height)
 
     entity = Entity(cid, owner, ctags, art_c=art_c, cm=cm, height=height,
-            ignore_wd=ignore_wd)
+                    ignore_wd=ignore_wd)
     # TODO TESTING: Use the exchange classifier in case this may be an exchange
     entity.classify(classifier, chain, cm)
     e_clusters = defaultdict(dict)
@@ -113,13 +142,13 @@ def explore_cluster(cid, height, merge, cseeds, art_c=None, ignore_wd=True,
         if t.is_coinbase:
             outs = {(t, o, 1) for o in t.outputs if entity.has_addr(o.address)}
             d = {
-                    'outs': outs,
-                    'addrs_sending': [],
-                    'addrs_receiving': {
-                        f"{cid}:{bfe.addr_to_string(o.address)}"
-                        for (t, o, p) in outs
-                    },
-                }
+                'outs': outs,
+                'addrs_sending': [],
+                'addrs_receiving': {
+                    f"{cid}:{bfe.addr_to_string(o.address)}"
+                    for (t, o, p) in outs
+                },
+            }
             # TODO use a value different than -1
             e_clusters = update_outs(-1, d, e_clusters, height, True)
             continue
@@ -127,7 +156,8 @@ def explore_cluster(cid, height, merge, cseeds, art_c=None, ignore_wd=True,
         # Some very rare txes may have cero inputs, like this one:
         # a842b87403e6d6ca1a9ea39b16d496ebeb6ab15b83acb619cc10daba08114029
         if t.input_value == 0:
-            logging.warning(f"Empty tx: {t.hash}\tinputs: {t.inputs.to_list()}\t{t.input_value} BTCs")
+            msg = "Empty tx: %s\tinputs: %s\t%s BTCs"
+            logging.warning(msg, t.hash, t.inputs.to_list(), t.input_value)
             continue
 
         d_cids = defaultdict(set)
@@ -137,7 +167,7 @@ def explore_cluster(cid, height, merge, cseeds, art_c=None, ignore_wd=True,
 
             if coinjoin:
                 entity.update_coinjoin_txes_out({str(t.hash)})
-                logging.debug(f"COINJOIN DEPOSIT: {t.hash}")
+                logging.debug("COINJOIN DEPOSIT: %s", t.hash)
 
             # Identify clusters sending funds, and the total amount sent
             sender = defaultdict(int)
@@ -155,8 +185,10 @@ def explore_cluster(cid, height, merge, cseeds, art_c=None, ignore_wd=True,
                 # Replace the amount sent with the contribution percentage
                 sender = {k: v/total_deposited for k, v in sender.items()}
             except ZeroDivisionError as ex:
-                logging.error(f"ZeroDivisionError in a deposit")
-                logging.error(f"tx: {t.hash}\tinputs: {t.inputs.to_list()}\tsender: {sender}\ttotal_deposited: {total_deposited}")
+                logging.error("ZeroDivisionError in a deposit")
+                msg = "tx: %s\tinputs: %s\tsender: %s\ttotal_deposited: %s"
+                inputs = t.inputs.to_list()
+                logging.error(msg, t.hash, inputs, sender, total_deposited)
                 raise ex
 
             # Values being deposited to the cluster
@@ -171,21 +203,20 @@ def explore_cluster(cid, height, merge, cseeds, art_c=None, ignore_wd=True,
                     continue
 
                 # Avoid reporting values deposited by the same seed clusters
-                elif merge and d_cid in cseeds:
+                if merge and d_cid in cseeds:
                     continue
 
                 if d_cid not in d_cids:
                     d_cids[d_cid] = {
-                            'outs': set(),
-                            'addrs_sending': sender_addrs[d_cid],
-                            'addrs_receiving': set()
-                        }
+                        'outs': set(),
+                        'addrs_sending': sender_addrs[d_cid],
+                        'addrs_receiving': set()
+                    }
 
                 d_cids[d_cid]['outs'].update([(t, o, p) for (t, o) in outs])
                 d_cids[d_cid]['addrs_receiving'].update([
-                        f"{cid}:{bfe.addr_to_string(o.address)}"
-                        for (t, o) in outs
-                    ])
+                    f"{cid}:{bfe.addr_to_string(o.address)}" for (t, o) in outs
+                ])
 
         else:
             # Identify the cluster sending funds
@@ -198,22 +229,22 @@ def explore_cluster(cid, height, merge, cseeds, art_c=None, ignore_wd=True,
                 continue
 
             # Avoid reporting values deposited by the same seed clusters
-            elif merge and d_cid in cseeds:
+            if merge and d_cid in cseeds:
                 continue
 
             # Adjust all the amounts deposited to the cluster by the sender
             outs = {(t, o, 1) for o in t.outputs if entity.has_addr(o.address)}
             d_cids[d_cid] = {
-                    'outs': outs,
-                    'addrs_sending': {
-                            f"{d_cid}:{bfe.addr_to_string(a)}"
-                            for a in input_addrs
-                        },
-                    'addrs_receiving': {
-                            f"{cid}:{bfe.addr_to_string(o.address)}"
-                            for (t, o, p) in outs
-                        },
-                }
+                'outs': outs,
+                'addrs_sending': {
+                    f"{d_cid}:{bfe.addr_to_string(a)}"
+                    for a in input_addrs
+                },
+                'addrs_receiving': {
+                    f"{cid}:{bfe.addr_to_string(o.address)}"
+                    for (t, o, p) in outs
+                },
+            }
 
         for d_cid, d in d_cids.items():
             d_clusters.add(d_cid)
@@ -226,7 +257,8 @@ def explore_cluster(cid, height, merge, cseeds, art_c=None, ignore_wd=True,
         # Some very rare txes may have cero inputs, like this one:
         # a842b87403e6d6ca1a9ea39b16d496ebeb6ab15b83acb619cc10daba08114029
         if t.input_value == 0:
-            logging.warning(f"Empty tx: {t.hash}\tinputs: {t.inputs.to_list()}\t{t.input_value} BTCs")
+            msg = "Empty tx: %s\tinputs: %s\t%s BTCs"
+            logging.warning(msg, t.hash, t.inputs.to_list(), t.input_value)
             continue
 
         w_cids = defaultdict(set)
@@ -238,7 +270,7 @@ def explore_cluster(cid, height, merge, cseeds, art_c=None, ignore_wd=True,
 
             if coinjoin:
                 entity.update_coinjoin_txes_in({str(t.hash)})
-                logging.debug(f"COINJOIN WITHDRAWAL: {t.hash}")
+                logging.debug("COINJOIN WITHDRAWAL: %s", t.hash)
 
             # Identify inputs of this cluster, and the total amount sent
             sender = defaultdict(int)
@@ -255,8 +287,10 @@ def explore_cluster(cid, height, merge, cseeds, art_c=None, ignore_wd=True,
                 # Replace the amount sent with the contribution percentage
                 sender = {k: v/total_deposited for k, v in sender.items()}
             except ZeroDivisionError as ex:
-                logging.error(f"ZeroDivisionError in a withdrawal")
-                logging.error(f"tx: {t.hash}\tinputs: {t.inputs.to_list()}\tsender: {sender}\ttotal_deposited: {total_deposited}")
+                logging.error("ZeroDivisionError in a withdrawal")
+                msg = "tx: %s\tinputs: %s\tsender: %s\ttotal_deposited: %s"
+                inputs = t.inputs.to_list()
+                logging.error(msg, t.hash, inputs, sender, total_deposited)
                 raise ex
 
         else:
@@ -271,7 +305,7 @@ def explore_cluster(cid, height, merge, cseeds, art_c=None, ignore_wd=True,
                 continue
 
             # Avoid reporting values withdrawn to the seed clusters
-            elif merge and w_cid in cseeds:
+            if merge and w_cid in cseeds:
                 continue
 
             # Adjust the amounts sent proportionally with respect to the
@@ -283,17 +317,17 @@ def explore_cluster(cid, height, merge, cseeds, art_c=None, ignore_wd=True,
 
             if w_cid not in w_cids:
                 w_cids[w_cid] = {
-                        'outs': set(),
-                        'addrs_receiving': set(),
-                        'addrs_sending': set()
-                    }
+                    'outs': set(),
+                    'addrs_receiving': set(),
+                    'addrs_sending': set()
+                }
 
             saddr_r = f"{w_cid}:{bfe.addr_to_string(output_address)}"
             w_cids[w_cid]['outs'].add(outs)
             w_cids[w_cid]['addrs_receiving'].add(saddr_r)
             w_cids[w_cid]['addrs_sending'].update([
-                    f"{cid}:{bfe.addr_to_string(a)}" for a in input_addresses
-                ])
+                f"{cid}:{bfe.addr_to_string(a)}" for a in input_addresses
+            ])
 
         for w_cid, d in w_cids.items():
             w_clusters.add(w_cid)
@@ -303,7 +337,14 @@ def explore_cluster(cid, height, merge, cseeds, art_c=None, ignore_wd=True,
     entity.w_clusters = w_clusters
     return entity, e_clusters
 
-def get_cluster(address, art_c, cm):
+def get_cluster(address, art_c, cm_c):
+    """
+    Get the CID of an address. When art_c is set, it takes priority over
+    MI/MICA clusters.
+    :param address: Get the CID of this address
+    :param art_c: Clusters to addresses mapping (non MI/MICA clusters)
+    :param cm_c: blocksci.ClusterManager object (MI/MICA clusters)
+    """
     cid = None
     if art_c:
         cid = bfe.art_cluster_with_address(art_c, address)
@@ -311,13 +352,21 @@ def get_cluster(address, art_c, cm):
     if cid is None:
         # if this is a no-clustering exploration, the MI-clustering doesn't
         # matter and the cid could be anything but -1
-        if cm is None:
+        if cm_c is None:
             cid = 0
         else:
-            cid = cm.cluster_with_address(address).index
+            cid = cm_c.cluster_with_address(address).index
     return cid
 
 def update_outs(cid, d, e_clusters, height, deposit=True):
+    """
+    Update the outputs found for this cid.
+    :param cid: cluster id
+    :param d: dict with the outputs to update
+    :param e_clusters: object to cache clusters already explored
+    :param height: block height
+    :param deposit: outs come from a deposit to the seeds
+    """
     global cm
     utcdate = datetime.utcfromtimestamp
 
@@ -337,30 +386,31 @@ def update_outs(cid, d, e_clusters, height, deposit=True):
             csize = c.addresses.size
 
         e_clusters[cid] = {
-                    'cluster': cid,
-                    'owner': cowner,
-                    'ctags': ctags,
-                    'csize': csize,
-                    'sent_outs': set(),
-                    'sent_to_seed': {
-                        'addrs_sending': set(),
-                        'addrs_receiving': set()
-                    },
-                    'recv_outs': set(),
-                    'recv_from_seed': {
-                        'addrs_sending': set(),
-                        'addrs_receiving': set()
-                    }
-                }
+            'cluster': cid,
+            'owner': cowner,
+            'ctags': ctags,
+            'csize': csize,
+            'sent_outs': set(),
+            'sent_to_seed': {
+                'addrs_sending': set(),
+                'addrs_receiving': set()
+            },
+            'recv_outs': set(),
+            'recv_from_seed': {
+                'addrs_sending': set(),
+                'addrs_receiving': set()
+            }
+        }
 
-    outs = {(
-        str(t.hash),
-        t.fee,
-        t.block.timestamp,
-        o.index,
-        o.value*p,
-        (o.value*p/1e8)*price.get_price(str(utcdate(t.block.timestamp))[:10]),
-        bfe.addr_to_string(o.address)
+    outs = {
+        (
+            str(t.hash),
+            t.fee,
+            t.block.timestamp,
+            o.index,
+            o.value*p,
+            (o.value*p/1e8)*price.get_price(str(utcdate(t.block.timestamp))[:10]),
+            bfe.addr_to_string(o.address)
         ) for (t, o, p) in d['outs']
     }
     addr_s = d['addrs_sending']
@@ -374,8 +424,15 @@ def update_outs(cid, d, e_clusters, height, deposit=True):
     return e_clusters
 
 def to_json(entity, clusters, s_txes, odir):
+    """
+    Export this entity to json format.
+    :param entity: entity object to save in a json file
+    :param clusters: clusters data of this entity
+    :param s_txes: save the list of txes in the json file
+    :param odir: output directory
+    """
     count = 0
-    rows = []
+    # rows = []
     sent_total_value = 0
     sent_total_value_usd = 0
     recv_total_value = 0
@@ -383,7 +440,7 @@ def to_json(entity, clusters, s_txes, odir):
     sent_all_txes = {}
     recv_all_txes = {}
     all_ts = set()
-    for c, d in clusters.items():
+    for _, d in clusters.items():
 
 #        logging.debug(f"Cluster: {c}, sent outs: {len(d['sent_outs'])}")
 #        logging.debug(f"Cluster: {c}, recv outs: {len(d['recv_outs'])}")
@@ -392,7 +449,7 @@ def to_json(entity, clusters, s_txes, odir):
         sent_value_usd = 0
         sent_txes = {}
         sent_ts = set()
-        for (h, f, t, i, v, u, a) in d['sent_outs']:
+        for (h, f, t, _, v, u, _) in d['sent_outs']:
             sent_value += v / 1e8
             sent_value_usd += u
             sent_txes[str(h)] = f / 1e8
@@ -422,7 +479,7 @@ def to_json(entity, clusters, s_txes, odir):
         recv_value_usd = 0
         recv_txes = {}
         recv_ts = set()
-        for (h, f, t, i, v, u, a) in d['recv_outs']:
+        for (h, f, t, _, v, u, _) in d['recv_outs']:
             recv_value += v / 1e8
             recv_value_usd += u
             recv_txes[str(h)] = f / 1e8
@@ -449,7 +506,7 @@ def to_json(entity, clusters, s_txes, odir):
 
         d['total'] = round(sent_value + recv_value, 8)
 
-    sent_total_fee = sum(sent_all_txes.values())
+    # sent_total_fee = sum(sent_all_txes.values())
     sent_all_txes = len(sent_all_txes)
     recv_total_fee = sum(recv_all_txes.values())
     recv_all_txes = len(recv_all_txes)
@@ -459,30 +516,30 @@ def to_json(entity, clusters, s_txes, odir):
     last_ts = str(datetime.utcfromtimestamp(all_ts[-1])) if all_ts else ''
 
     jr = {
-            'seed_cluster': entity.cid,
-            'owner': entity.owner,
-            'ctags': entity.ctags,
-            'csize': entity.size,
-            'service': entity.service,
-            'ec-prob': entity.prob,
-            'balance': balance,
-            'first_tx_ts': first_ts,
-            'last_tx_ts': last_ts,
-            'deposits_total_value': round(sent_total_value, 8),
-            'deposits_total_value_usd': round(sent_total_value_usd, 2),
-##            'deposits_total_fees': round(sent_total_fee, 8),
-            'deposits_total_txes': sent_all_txes,
-            'deposits_total_coinjoin_txes': entity.coinjoin_txes_out_count,
-            'withdrawals_total_value': round(recv_total_value, 8),
-            'withdrawals_total_value_usd': round(recv_total_value_usd, 2),
-            'withdrawals_total_fees': round(recv_total_fee, 8),
-            'withdrawals_total_txes': recv_all_txes,
-            'withdrawals_total_coinjoin_txes': entity.coinjoin_txes_in_count,
-            'total_clusters': len(clusters),
-            'clusters': []
-        }
+        'seed_cluster': entity.cid,
+        'owner': entity.owner,
+        'ctags': entity.ctags,
+        'csize': entity.size,
+        'service': entity.service,
+        'ec-prob': entity.prob,
+        'balance': balance,
+        'first_tx_ts': first_ts,
+        'last_tx_ts': last_ts,
+        'deposits_total_value': round(sent_total_value, 8),
+        'deposits_total_value_usd': round(sent_total_value_usd, 2),
+        # 'deposits_total_fees': round(sent_total_fee, 8),
+        'deposits_total_txes': sent_all_txes,
+        'deposits_total_coinjoin_txes': entity.coinjoin_txes_out_count,
+        'withdrawals_total_value': round(recv_total_value, 8),
+        'withdrawals_total_value_usd': round(recv_total_value_usd, 2),
+        'withdrawals_total_fees': round(recv_total_fee, 8),
+        'withdrawals_total_txes': recv_all_txes,
+        'withdrawals_total_coinjoin_txes': entity.coinjoin_txes_in_count,
+        'total_clusters': len(clusters),
+        'clusters': []
+    }
     s = sorted(clusters.items(), key=lambda x: x[1]['total'], reverse=True)
-    for c, d in s:
+    for _, d in s:
         d.pop('sent_outs')
         d.pop('recv_outs')
         sts = d['sent_to_seed']
@@ -507,6 +564,10 @@ def to_json(entity, clusters, s_txes, odir):
     return clusters
 
 def summary(jr):
+    """
+    Print a summary of this exploration.
+    :param jr: json object with data of this exploration
+    """
     to_seed = []
     from_seed = []
     for c in jr['clusters']:
@@ -525,36 +586,41 @@ def summary(jr):
             from_seed.append([value, addrs_recv, addrs_send, cid, owner, size])
 
     msg = (
-            f"\nSummary of cluster {jr['seed_cluster']} (size {jr['csize']:,})"
-            f"\nTotal deposited: {jr['deposits_total_value']:,} BTC "
-            f"({jr['deposits_total_value_usd']:,} USD)"
-        )
+        f"\nSummary of cluster {jr['seed_cluster']} (size {jr['csize']:,})"
+        f"\nTotal deposited: {jr['deposits_total_value']:,} BTC "
+        f"({jr['deposits_total_value_usd']:,} USD)"
+    )
 
     msg += f"\n\nDeposits:"
     for row in to_seed:
         value, addrs_recv, addrs_send, cid, owner, size = row
         msg += (
-                f"\n{value:,} BTC received by {addrs_recv:,} address"
-                f"{'es' if addrs_recv > 1 else ''} from "
-                f"{addrs_send:,} address{'es' if addrs_send > 1 else ''} "
-                f"of cluster {cid}:{owner}"
-            )
+            f"\n{value:,} BTC received by {addrs_recv:,} address"
+            f"{'es' if addrs_recv > 1 else ''} from "
+            f"{addrs_send:,} address{'es' if addrs_send > 1 else ''} "
+            f"of cluster {cid}:{owner}"
+        )
 
     msg += f"\n\nWithdrawals: "
     for row in from_seed:
         value, addrs_recv, addrs_send, cid, owner, size = row
         msg += (
-                f"\n{value:,} BTC sent by {addrs_send:,} address"
-                f"{'es' if addrs_send > 1 else ''} to "
-                f"{addrs_recv:,} address{'es' if addrs_recv > 1 else ''} "
-                f"of cluster {cid}:{owner}"
-            )
+            f"\n{value:,} BTC sent by {addrs_send:,} address"
+            f"{'es' if addrs_send > 1 else ''} to "
+            f"{addrs_recv:,} address{'es' if addrs_recv > 1 else ''} "
+            f"of cluster {cid}:{owner}"
+        )
     logging.info(msg)
 
 def to_graph(entity, e_clusters):
+    """
+    Export the results of the exploration to a GML graph
+    :param entity: entity object
+    :param e_clusters: clusters info of this entity
+    """
     G = nx.DiGraph()
     G.add_node(entity.cid, owner=entity.owner, ctags=entity.ctags,
-            csize=entity.size, seed='1')
+               csize=entity.size, seed='1')
     G.nodes[entity.cid]['graphics'] = {'fill': "#7800ff"}
 
     for c, d in e_clusters.items():
@@ -570,33 +636,36 @@ def to_graph(entity, e_clusters):
             l_ts = d['sent_to_seed']['last_tx_ts']
             ntxes = d['sent_to_seed']['txes']
             G.add_edge(c, entity.cid, weight=total_sent, usd=total_sent_usd,
-                    ntxes=ntxes, firstts=f_ts, lastts=l_ts)
+                       ntxes=ntxes, firstts=f_ts, lastts=l_ts)
 
         if total_recv:
             f_ts = d['recv_from_seed']['first_tx_ts']
             l_ts = d['recv_from_seed']['last_tx_ts']
             ntxes = d['recv_from_seed']['txes']
             G.add_edge(entity.cid, c, weight=total_recv, usd=total_recv_usd,
-                    ntxes=ntxes, firstts=f_ts, lastts=l_ts)
+                       ntxes=ntxes, firstts=f_ts, lastts=l_ts)
 
     return G
 
 def merge_clusters(merged_clusters, e_clusters):
+    """
+    Merge clusters of the same operation.
+    """
 
     for c in e_clusters:
 
         if c in merged_clusters:
 
-            e = e_clusters[c]['sent_to_seed']
+            ec = e_clusters[c]['sent_to_seed']
             m = merged_clusters[c]['sent_to_seed']
-            m['addrs_sending'].update(e['addrs_sending'])
-            m['addrs_receiving'].update(e['addrs_receiving'])
+            m['addrs_sending'].update(ec['addrs_sending'])
+            m['addrs_receiving'].update(ec['addrs_receiving'])
             merged_clusters[c]['sent_outs'].update(e_clusters[c]['sent_outs'])
 
-            e = e_clusters[c]['recv_from_seed']
+            ec = e_clusters[c]['recv_from_seed']
             m = merged_clusters[c]['recv_from_seed']
-            m['addrs_sending'].update(e['addrs_sending'])
-            m['addrs_receiving'].update(e['addrs_receiving'])
+            m['addrs_sending'].update(ec['addrs_sending'])
+            m['addrs_receiving'].update(ec['addrs_receiving'])
             merged_clusters[c]['recv_outs'].update(e_clusters[c]['recv_outs'])
 
         else:
@@ -641,15 +710,18 @@ def graph_compose_from_list(graphs, clear=False):
 
 
 def main(args):
+    """
+    Main function
+    """
     global chain, cm
     chain, cm = bfe.build_load_blocksci(args.blocksci, args.height)
 
     if args.artificial:
         art_c = bfe.build_art_clusters(chain, args.artificial, args.height,
-                    ignore_wd=False)
+                                       ignore_wd=False)
         if not art_c:
-            msg = f"File {args.artificial} is not a valid mapping file."
-            logging.error(msg)
+            msg = "File %s is not a valid mapping file."
+            logging.error(msg, args.artificial)
             return
     else:
         art_c = None
@@ -663,37 +735,47 @@ def main(args):
         classifier = load(args.classifier)
     else:
         classifier = None
-        logging.warning('Exchange classifier not set.')
+        logging.warning("Exchange classifier not set.")
 
     explore_clusters(args.height, args.merge, args.clusters, art_c, args.txes,
-            args.output, args.operation, ignore_wd=False, save=True,
-            classifier=classifier)
+                     args.output, args.operation, ignore_wd=False, save=True,
+                     classifier=classifier)
 
 
 if __name__ == '__main__':
     desc = "Explore deposits and withdrawals of a cluster"
-    version = '1.0'
+    version = '1.1'
     parser = argparse.ArgumentParser(description=desc)
-    parser.add_argument('-D', '--blocksci', type=str,
-            help='Blocksci config file')
-    parser.add_argument('-H', '--height', type=int, default=769900,
-            help='Max block height')
-    parser.add_argument('-c', '--clusters', action='append', type=int,
-            help='Cluster IDs to be explored')
-    parser.add_argument('-F', '--clusters-file', default=None,
-            help='File with a list of cluster IDs to be explored')
-    parser.add_argument('-t', '--txes', action="store_true",
-            help='Store all transactions found into the output file')
-    parser.add_argument('-M', '--merge', action='store_true',
-            help='Assume that the given cluster IDs belong to the same entity')
-    parser.add_argument('-o', '--operation', type=str, default=None,
-            help='A tag for the owner of the explored clusters')
-    parser.add_argument('-A', '--artificial', action='store', default=None,
-            help='Use this file to manually map addresses to new clusters')
-    parser.add_argument('-O', '--output', type=str, default='./',
-            help='Save all outputs into this folder')
-    parser.add_argument('-C', '--classifier', type=str, default=None,
-            help='Path to the exchange classifier')
+    parser.add_argument(
+        '-D', '--blocksci', type=str,
+        help='Blocksci config file')
+    parser.add_argument(
+        '-H', '--height', type=int, default=769900,
+        help='Max block height')
+    parser.add_argument(
+        '-c', '--clusters', action='append', type=int,
+        help='Cluster IDs to be explored')
+    parser.add_argument(
+        '-F', '--clusters-file', default=None,
+        help='File with a list of cluster IDs to be explored')
+    parser.add_argument(
+        '-t', '--txes', action="store_true",
+        help='Store all transactions found into the output file')
+    parser.add_argument(
+        '-M', '--merge', action='store_true',
+        help='Assume that the given cluster IDs belong to the same entity')
+    parser.add_argument(
+        '-o', '--operation', type=str, default=None,
+        help='A tag for the owner of the explored clusters')
+    parser.add_argument(
+        '-A', '--artificial', action='store', default=None,
+        help='Use this file to manually map addresses to new clusters')
+    parser.add_argument(
+        '-O', '--output', type=str, default='./',
+        help='Save all outputs into this folder')
+    parser.add_argument(
+        '-C', '--classifier', type=str, default=None,
+        help='Path to the exchange classifier')
     parser.add_argument('-v', '--version', action='version', version=version)
 
     args = parser.parse_args()
@@ -720,12 +802,12 @@ if __name__ == '__main__':
     op = args.operation or oplist or op
     flog = os.path.join(args.output, f"{op}.log")
     logging.basicConfig(filename=flog, level=logging.DEBUG)
-    logging.debug(f"Made with version {version}")
-    logging.debug(f"- Added exchange classifier results to seeds")
-    logging.debug(f"- Added summary per cluster explored")
-    logging.debug(f"- Added first/last_tx_ts to seed cluster; no deposit fees")
-    logging.debug(f"- Added object Entity")
-    logging.debug(f"- Added ignore_wd parameter to art_c")
-    logging.debug(f"{args}")
+    logging.debug("Made with version %s", version)
+    logging.debug("- Added exchange classifier results to seeds")
+    logging.debug("- Added summary per cluster explored")
+    logging.debug("- Added first/last_tx_ts to seed cluster; no deposit fees")
+    logging.debug("- Added object Entity")
+    logging.debug("- Added ignore_wd parameter to art_c")
+    logging.debug("%s", args)
 
     main(args)

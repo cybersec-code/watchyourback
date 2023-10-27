@@ -1074,7 +1074,7 @@ def main(args):
 if __name__ == '__main__':
     usage = "\n\n\tExtract a set of features from a list of bitcoin" +\
             " addresses, and write the results into a file."
-    version = '2.4.2'
+    version = '2.4.3'
     parser = argparse.ArgumentParser(description=usage)
     parser.add_argument('-D', '--blocksci', dest='blocksci', action='store',
             type=str, help='Blocksci config file')

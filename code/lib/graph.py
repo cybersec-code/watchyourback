@@ -942,7 +942,7 @@ def main(args):
         components(args.graph, args.components)
 
 if __name__ == '__main__':
-    version = "2.4.2"
+    version = "2.4.3"
     parser = argparse.ArgumentParser()
     parser.add_argument('-g', '--graph', action='store', type=str,
             help='Graph in GML format')
