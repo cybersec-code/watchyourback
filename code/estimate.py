@@ -23,9 +23,10 @@ ec = set(ec_ransomwhere + ec_exchange_scams + ec_giveaway_scams)
 
 def expansion(seeds, clustering, tag_filter, height):
     global chain, cm_mi, cm_mica
+
     if not chain and (not cm_mi or not cm_mica):
-        logging.error(f"Chain is not loaded. Exiting.")
-        return
+        logging.error("Chain is not loaded. Exiting.")
+        return None
 
     clusters = {}
     for seed in seeds:
@@ -178,49 +179,61 @@ def estimation(seeds, dc, clust, filter, tag_filter, height):
 
     return get_estimation_outs(clusters, dc, filter, height)
 
-def estimation_name(args, filter=True):
-    ow = '-OW' if args.tag_filter else ''
-    exp = f"+{args.clustering.upper()}" if args.clustering else ''
-    if filter:
-        cf = f"-{args.filter.upper()}" if args.filter else ''
-    else:
-        cf = ''
-    dc = '-DC' if args.doublecounting else ''
-    return f"DD{ow}{exp}{cf}{dc}"
+#def estimation_name(args, filter=True):
+#    ow = '-OW' if args.tag_filter else ''
+#    exp = f"+{args.clustering.upper()}" if args.clustering else ''
+#    if filter:
+#        cf = f"-{args.filter.upper()}" if args.filter else ''
+#    else:
+#        cf = ''
+#    dc = '-DC' if args.doublecounting else ''
+#    return f"DD{ow}{exp}{cf}{dc}"
 
-def load_chain(cnf, height, change=False):
+def load_chain(cnf, height, clustering=True, change=False):
     global chain, cm_mi, cm_mica
-    if change:
-        chain, cm_mica = bfe.build_load_blocksci(cnf, height, change=change)
+    if clustering:
+        chain, cm_ = bfe.build_load_blocksci(cnf, height, change=change)
+        if change:
+            cm_mica = cm_
+        else:
+            cm_mi = cm_
     else:
-        chain, cm_mi = bfe.build_load_blocksci(cnf, height)
+        chain = bfe.load_chain(cnf)
 
 
 def main(args):
     global chain, cm_mi, cm_mica
 
-    if args.clustering == "mi":
-        chain, cm_mi = bfe.build_load_blocksci(args.blocksci, args.height)
-    elif args.clustering == "mica":
-        _, cm_mica = bfe.build_load_blocksci(args.blocksci, args.height,
-                change=True)
-        chain, cm_mi = bfe.build_load_blocksci(args.blocksci, args.height)
-    else:
-        chain = bfe.load_chain(args.blocksci)
+    clustering = 'mica' if '+MICA' in args.estimation else \
+                 'mi' if '+MI' in args.estimation else \
+                 None
+    change = clustering == 'mica'
+    dc = '-DC' in args.estimation
+    tag_filter = '-OW' in args.estimation
+
+    load_chain(args.blocksci, args.height, clustering, change)
+#    if clustering == "mi":
+#        chain, cm_mi = bfe.build_load_blocksci(args.blocksci, args.height)
+#    elif clustering == "mica":
+#        _, cm_mica = bfe.build_load_blocksci(args.blocksci, args.height,
+#                change=True)
+#        chain, cm_mi = bfe.build_load_blocksci(args.blocksci, args.height)
+#    else:
+#        chain = bfe.load_chain(args.blocksci)
 
     if args.seeds_file:
         fseeds = pd.read_csv(args.seeds_file, names=['addr']).addr.unique()
         args.seeds = args.seeds.extend(fseeds) if args.seeds else fseeds
 
-    e = estimation(args.seeds, args.doublecounting, args.clustering,
-            args.filter, args.tag_filter, args.height)
+    e = estimation(args.seeds, dc, clustering, args.filter, tag_filter,
+                   args.height)
 
     if e is None:
         logging.debug(f"Empty set of seeds.")
     else:
         addrs, dep, period, btc, usd, faddrs, fdep, fperiod, fbtc, fusd = e
 
-    est = estimation_name(args, filter=False)
+    est = args.estimation #estimation_name(args, filter=False)
     logging.info(f"\n{est} Estimation:")
     logging.info(f"\tADDRS:\t{addrs:,}")
     logging.info(f"\tDEP:\t{dep:,}")
@@ -230,7 +243,8 @@ def main(args):
     logging.debug(f"\n{addrs:,} & {dep:,} & {btc:,.4f} & {usd:,.0f}")
 
     if args.filter:
-        est = estimation_name(args, filter=True)
+        #est = estimation_name(args, filter=True)
+        est = f"{args.estimation}-{args.filter}"
         logging.info(f"\n{est} Estimation:")
         logging.info(f"\tADDRS:\t{faddrs:,}")
         logging.info(f"\tDEP:\t{fdep:,}")
@@ -242,7 +256,7 @@ def main(args):
 
 if __name__ == '__main__':
     desc = "Estimate Bitcoin revenue using different methodologies"
-    version = '1.0'
+    version = '1.1'
     parser = argparse.ArgumentParser(description=desc)
     parser.add_argument('-D', '--blocksci', type=str,
             help='Blocksci config file')
@@ -256,16 +270,22 @@ if __name__ == '__main__':
             help='Assign this tag to this operation')
     parser.add_argument('-A', '--artificial', action='store', default=None,
             help='Use this file to manually map addresses to new clusters')
-    parser.add_argument('-C', '--clustering', action='store',
-            choices=['mi', 'mica'], default=None,
-            help='Use this expansion heuristic [mi:multi-input, mica:MI+CA]')
+#    parser.add_argument('-C', '--clustering', action='store',
+#            choices=['mi', 'mica'], default=None,
+#            help='Use this expansion heuristic [mi:multi-input, mica:MI+CA]')
     parser.add_argument('-F', '--filter', action='store', default=None,
             choices=['vf', 'tf', 'vtf'], help=("Use CryptoLocker's value/time"
                 "filter [vf:value, tf:time, vtf:vale&time]"))
-    parser.add_argument('-T', '--tag-filter', action='store_true',
-            help='Remove txes of addresses (except seeds) of service clusters')
-    parser.add_argument('-d', '--doublecounting', action='store_true',
-            help='Use the double-counting filter in the estimation')
+#    parser.add_argument('-T', '--tag-filter', action='store_true',
+#            help='Remove txes of addresses (except seeds) of service clusters')
+#    parser.add_argument('-d', '--doublecounting', action='store_true',
+#            help='Use the double-counting filter in the estimation')
+    parser.add_argument('-e', '--estimation', action='store',
+            choices=[
+                'DD', 'DD+MI', 'DD+MICA', 'DD-OW+MI', 'DD-OW+MICA', 'DD-DC',
+                'DD+MI-DC', 'DD+MICA-DC', 'DD-OW+MI-DC', 'DD-OW+MICA-DC'
+            ],
+            help='Methodology of the estimation: DD[[-OW]+[MI|MICA]][-DC]')
     parser.add_argument('-O', '--output', type=str, default='./',
             help='Save all outputs into this folder')
     parser.add_argument('-v', '--version', action='version', version=version)
@@ -289,7 +309,7 @@ if __name__ == '__main__':
         parser.error("\n".join(e))
 
     op = args.operation or 'estimation'
-    est = estimation_name(args)
+    est = args.estimation #estimation_name(args)
     flog = os.path.join(args.output, f"{op}_{est}.log")
     logging.basicConfig(filename=flog, level=logging.DEBUG)
     logging.debug(f"Estimation {est}. Version {version}")
