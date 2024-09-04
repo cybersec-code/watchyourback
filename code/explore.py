@@ -929,12 +929,6 @@ class Exploration:
                         ransom_addr = e['ransom_addr']
                         v = e['op_ret']
                         fo.write(f"{name}\t{ransom_addr}\t{v}\n")
-                    elif self.oracle == 'bitab':
-                        abuse_id = e['abuse_type_id']
-                        abuse_ot = e['abuse_type_other']
-                        abuser = e['abuser']
-                        v = f"{abuse_id}_{abuse_ot}_{abuser}"
-                        fo.write(f"{name}\t{abuse_id}\t{abuse_ot}\t{abuser}\n")
 
                     rev_iocs[v].add(address.fullname)
 
@@ -1035,7 +1029,7 @@ if __name__ == '__main__':
             exploration recursively at each step. Service addresses are not \
             explored. Produce an address-transaction graph at the end."
 
-    version = "2.1.4"
+    version = "2.4.10"
 
     parser = argparse.ArgumentParser(description=usage)
     parser.add_argument('-D', '--blocksci', dest='blocksci', action='store',
@@ -1055,7 +1049,7 @@ if __name__ == '__main__':
     parser.add_argument('-t', '--threshold', dest='threshold', action='store',
             type=float, default=0.5, help='Threshold to decide between classes')
     parser.add_argument('-T', '--maxexprank', dest='maxexprank', action='store',
-            type=int, default=0, help='Discard tracking addreses with an\
+            type=int, default=2000, help='Discard tracking addreses with an\
                      explosion rank larger than this number')
     parser.add_argument('-b', '--skip-first-backwards', dest='skip_first_back',
             action='store_true', help='Skip first step backwards',

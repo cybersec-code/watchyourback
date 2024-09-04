@@ -205,7 +205,7 @@ booktitle = {Proceedings of the 2023 ACM SIGSAC Conference on Computer and Commu
 pages = {3183–3197},
 numpages = {15},
 keywords = {cybercrime, revenue estimation, bitcoin, deadbolt ransomware},
-location = {<conf-loc>, <city>Copenhagen</city>, <country>Denmark</country>, </conf-loc>},
+location = {Copenhagen, Denmark},
 series = {CCS '23}
 }
 ```
